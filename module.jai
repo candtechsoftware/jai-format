@@ -34,10 +34,11 @@ Formatter_Config :: struct
     braces_on_new_line := false;
     quick_lambda_brace_on_new_line := false;
     else_on_new_line := false;
-    indent_case := false;
+    indent_case := true;
     surround_multiple_returns_with_parens := false;
     insert_space_in_single_line_comments := true;
     keep_whitespace_before_single_line_comments := false;
+    align_consecutive_declarations := false;
     max_empty_lines_to_keep := 1;
 
     space_after_cast := false;
@@ -107,6 +108,7 @@ Jai_Formatter :: struct( Parser_Visit_Type: Type = Node_Visit_Data )
     inside_code_argument: bool;
     inside_code_argument_count: int;
     aligned_inside_assignment: bool;
+    align_declaration_name_width: int;
 
     current_comment_index: int;
 
@@ -327,9 +329,25 @@ format_from_nodes :: ( f: *Jai_Formatter, nodes: []*Node, file := "" ) -> Format
 
     log( "Formatting '%'.", ifx file else "string", flags = .VERBOSE_ONLY );
     #if FORMATTER_ENABLE_PROFILING { formatting_start := seconds_since_init(); }
+    group_end := -1;
     for nodes
     {
+        if f.align_consecutive_declarations && it_index > group_end && node_is( xx it, .DECLARATION )
+        {
+            max_width, end := get_declaration_group_max_name_width( nodes, it_index );
+            if end > it_index
+            {
+                f.align_declaration_name_width = max_width;
+                group_end = end;
+            }
+        }
+
         print_node( f, xx it );
+
+        if it_index >= group_end
+        {
+            f.align_declaration_name_width = 0;
+        }
     }
 
     for f.current_comment_index..f.parser.lexer.comments.count - 1
@@ -473,9 +491,35 @@ print_node :: ( f: *Jai_Formatter, node: *Node, no_semicolon := false )
     f.last_node = node;
 }
 
+get_declaration_group_max_name_width :: ( members: []*Node, start: int ) -> int, int
+{
+    max_width := 0;
+    end := start;
+    prev_l1 := -1;
+
+    for i: start..members.count - 1
+    {
+        m := members[ i ];
+        if !node_is( m, .DECLARATION ) then break;
+
+        d := m.( *Declaration );
+        if d.name.count == 0 then break;
+
+        if prev_l1 >= 0 && m.location.l0 - prev_l1 > 1 then break;
+
+        name_width := d.name.count;
+        if d.backticked then name_width += 1;
+        if name_width > max_width then max_width = name_width;
+        end = i;
+        prev_l1 = m.location.l1;
+    }
+
+    return max_width, end;
+}
+
 print_block :: ( f: *Jai_Formatter, b: *Block, is_modify := false )
 {
-    // TODO: Make sure that clearing the alignment is ok here. 
+    // TODO: Make sure that clearing the alignment is ok here.
     clear_alignment( f );
     f.previous_line = f.current_line;
     f.current_line = b.location.l0;
@@ -567,19 +611,43 @@ print_declaration :: ( f: *Jai_Formatter, d: *Declaration, compound_type := Comp
 
     print( f, d.name );
 
-    // NOTE: Name is not set in compound declarations 
+    // NOTE: Name is not set in compound declarations
     compound := d.name.count == 0;
 
     if d.type_inst
     {
         print( f, ":" );
-        space( f );
+        if f.align_declaration_name_width > 0
+        {
+            name_width := d.name.count;
+            if d.backticked then name_width += 1;
+            for 0..f.align_declaration_name_width - name_width
+            {
+                space( f );
+            }
+        }
+        else
+        {
+            space( f );
+        }
         print_node( f, d.type_inst );
     }
 
     if d.expression
     {
-        maybe_print_space( f, f.spaces_around_operators && !( d.const && d.type_inst ) );
+        if f.align_declaration_name_width > 0 && !d.type_inst
+        {
+            name_width := d.name.count;
+            if d.backticked then name_width += 1;
+            for 0..f.align_declaration_name_width - name_width
+            {
+                space( f );
+            }
+        }
+        else
+        {
+            maybe_print_space( f, f.spaces_around_operators && !( d.const && d.type_inst ) );
+        }
         op: string;
         if d.const
         {
