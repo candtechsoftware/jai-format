@@ -38,7 +38,7 @@ Formatter_Config :: struct
     surround_multiple_returns_with_parens := false;
     insert_space_in_single_line_comments := true;
     keep_whitespace_before_single_line_comments := false;
-    align_consecutive_declarations := false;
+    align_consecutive_declarations := true;
     max_empty_lines_to_keep := 1;
 
     space_after_cast := false;
@@ -566,9 +566,26 @@ print_block :: ( f: *Jai_Formatter, b: *Block, is_modify := false )
     new_line_after_brace := !single_line && ( is_empty || first_member_on_same_line );
     maybe_print_new_line( f, new_line_after_brace, should_indent = first_member_on_same_line );
 
+    group_end := -1;
     for b.members
     {
+        if f.align_consecutive_declarations && it_index > group_end && node_is( xx it, .DECLARATION )
+        {
+            max_width, end := get_declaration_group_max_name_width( b.members, it_index );
+            if end > it_index
+            {
+                f.align_declaration_name_width = max_width;
+                group_end = end;
+            }
+        }
+
         print_node( f, it );
+
+        if it_index >= group_end
+        {
+            f.align_declaration_name_width = 0;
+        }
+
         maybe_print_space( f, single_line && it_index != b.members.count - 1 );
     }
 
@@ -617,7 +634,7 @@ print_declaration :: ( f: *Jai_Formatter, d: *Declaration, compound_type := Comp
     if d.type_inst
     {
         print( f, ":" );
-        if f.align_declaration_name_width > 0
+        if f.align_declaration_name_width > 0 && !f.inside_arguments
         {
             name_width := d.name.count;
             if d.backticked then name_width += 1;
@@ -635,7 +652,7 @@ print_declaration :: ( f: *Jai_Formatter, d: *Declaration, compound_type := Comp
 
     if d.expression
     {
-        if f.align_declaration_name_width > 0 && !d.type_inst
+        if f.align_declaration_name_width > 0 && !d.type_inst && !f.inside_arguments
         {
             name_width := d.name.count;
             if d.backticked then name_width += 1;
@@ -2139,7 +2156,22 @@ print_directive :: ( f: *Jai_Formatter, d: *$T, no_semicolon := false )
             f.inside_code_argument = true;
             f.inside_code_argument_count += 1;
         }
+
+        // When #code has a block expression inside arguments, temporarily clear
+        // inside_arguments so declarations/statements in the block get their semicolons.
+        saved_inside_args := f.inside_arguments;
+        saved_inside_args_count := f.inside_arguments_count;
+        if f.inside_arguments && node_is( d.expression, .BLOCK )
+        {
+            f.inside_arguments = false;
+            f.inside_arguments_count = 0;
+        }
+
         print_node( f, d.expression );
+
+        f.inside_arguments = saved_inside_args;
+        f.inside_arguments_count = saved_inside_args_count;
+
         if f.inside_arguments && !node_is( d.expression, .BLOCK )
         {
             f.inside_code_argument_count -= 1;
