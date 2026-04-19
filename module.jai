@@ -99,7 +99,6 @@ Jai_Formatter :: struct( Parser_Visit_Type: Type = Node_Visit_Data )
     previous_print_type: enum { STRING; NEW_LINE; TAB; INDENT; SPACE; SEMICOLON; }
     new_scope_started: bool;
 
-    current_min_source_collumn: int;
     current_max_source_collumn: int;
     last_node: *Node;
 
@@ -387,20 +386,19 @@ print_node :: ( f: *Jai_Formatter, node: *Node, no_semicolon := false )
     if node.location.l0 > f.current_line
     {
         f.current_max_source_collumn = 0;
-        f.current_min_source_collumn = 1000;
     }
 
+    // TODO: Are there any other nodes that don't need this space? 
     lines_added := insert_new_lines( f, node );
     if lines_added == 0 && f.previous_print_type == .SEMICOLON &&
-       !node_is( node, .NOTE ) // TODO: Are there any other nodes that don't need this space?
+       !node_is( node, .NOTE )
     {
         space( f );
     }
 
-    f.current_min_source_collumn = min( f.current_min_source_collumn, node.location.c0 );
-    f.current_max_source_collumn = max( f.current_max_source_collumn, node.location.c1 );
+    f.current_max_source_collumn = max( f.current_max_source_collumn, max( node.location.c0, node.location.c1 ) );
 
-    // log( "print node: %, %, parent: %", node.kind, node.location, ifx node.parent then node.parent.kind else .UNINITIALIZATED);
+    // log( "print node: %, %, parent: %", node.kind, node.location, ifx node.parent then node.parent.kind else .UNINITIALIZATED );
 
     if node.kind ==
     {
@@ -523,9 +521,12 @@ print_block :: ( f: *Jai_Formatter, b: *Block, is_modify := false )
     clear_alignment( f );
     f.previous_line = f.current_line;
     f.current_line = b.location.l0;
+
     single_line := b.location.l0 == b.location.l1;
     on_new_line: bool;
     parent_is_lambda_or_code := parent_is( b, .QUICK_LAMBDA ) || parent_is( b, .DIRECTIVE_CODE );
+    parent_is_block := parent_is( b, .BLOCK );
+
     if parent_is_lambda_or_code
     {
         on_new_line = f.quick_lambda_brace_on_new_line && b.members.count != 0;
@@ -545,7 +546,7 @@ print_block :: ( f: *Jai_Formatter, b: *Block, is_modify := false )
 
     maybe_print_new_line( f, on_new_line );
     space_already_added := f.previous_print_type == .SPACE;
-    maybe_print_space( f, !space_already_added && ( !f.braces_on_new_line || ( single_line && !on_new_line ) ) );
+    maybe_print_space( f, !parent_is_block && !space_already_added && ( !f.braces_on_new_line || ( single_line && !on_new_line ) ) );
 
     if on_new_line
     {
@@ -735,7 +736,7 @@ print_declaration :: ( f: *Jai_Formatter, d: *Declaration, compound_type := Comp
     ends_with_block |= node_is( check, .STRUCT );
     ends_with_block |= node_is( check, .ENUM );
     ends_with_block |= node_is( check, .UNION );
-    ends_with_block |= node_is( check, .PROCEDURE );
+    ends_with_block |= node_is( check, .PROCEDURE ) && d.expression;
     ends_with_block |= node_is( check, .DIRECTIVE_STRING );
 
     if !ends_with_block &&
@@ -2108,7 +2109,14 @@ print_directive :: ( f: *Jai_Formatter, d: *$T, no_semicolon := false )
 
         print_node( f, d.expression );
 
-        if standalone_expression( d ) && !node_is( d.expression, .BLOCK )
+        is_if_condition: bool;
+        if parent_is( d, .IF )
+        {
+            _if := d.parent.( *If );
+            is_if_condition = _if.condition == d;
+        }
+
+        if standalone_expression( d ) && !node_is( d.expression, .BLOCK ) && !is_if_condition
         {
             semicolon( f );
         }
@@ -2430,8 +2438,13 @@ print_comment :: ( f: *Jai_Formatter )
        !c.multiline && after_statement
     {
         space_diff := c.c0 - f.current_max_source_collumn;
-        // NOTE: Hack because procedure calls don't include the semicolon in their location
-        if node_is( f.last_node, .PROCEDURE_CALL ) && node_is( f.last_node.( *Procedure_Call ).procedure, .IDENTIFIER )
+        // log( "comment: %, %, %, diff: %, last_node: %", c.string_value, c.c0, f.current_max_source_collumn, space_diff, ifx f.last_node then f.last_node.kind else .UNINITIALIZATED );
+
+        // TODO: This whole handling of whitespace sucks and there are probably more cases where it breaks.
+        // For example this is still broken when a comment is placed after an opening brace that's on a new line.
+        // Change how comments are handled in jai_parser?
+        includes_semicolon_in_location := node_is( f.last_node, .DECLARATION );
+        if !includes_semicolon_in_location
         {
             space_diff -= 1;
         }
